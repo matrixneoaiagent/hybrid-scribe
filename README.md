@@ -8,6 +8,8 @@ Built for the [**#BuildHybridAI 2026**](https://firebasehybridaihackathon.devpos
 
 ![status](https://img.shields.io/badge/status-working%20skeleton-f2a33c)
 
+**Live demo:** https://buildhybridai-2026-neo.web.app
+
 ## What it does
 
 - Paste notes, choose an inference mode, press **Summarise**.
