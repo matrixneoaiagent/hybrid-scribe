@@ -1,0 +1,18 @@
+rules_version = '2';
+
+// Each signed-in user (Google or anonymous) owns exactly one namespace.
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /users/{uid}/notes/{noteId} {
+      allow read, delete: if request.auth != null && request.auth.uid == uid;
+      allow create, update: if request.auth != null
+        && request.auth.uid == uid
+        && request.resource.data.keys().hasOnly(
+             ['title', 'text', 'summary', 'question', 'answer', 'source', 'latencyMs', 'chunks', 'createdAt', 'updatedAt'])
+        && request.resource.data.title is string
+        && request.resource.data.title.size() <= 120
+        && request.resource.data.text is string
+        && request.resource.data.text.size() <= 200000;
+    }
+  }
+}

@@ -2,72 +2,265 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Hybrid Scribe — on-device first, cloud when needed</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#101318" />
+    <meta
+      name="description"
+      content="Hybrid Scribe — an offline-first research assistant that summarises and answers questions about long documents, on-device when possible and in the cloud when not."
+    />
+    <title>Hybrid Scribe — offline-first research assistant</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%23f2a33c'/%3E%3Ccircle cx='24' cy='24' r='9' fill='%23fff3d6'/%3E%3Crect x='14' y='38' width='36' height='6' rx='3' fill='%237c3aed'/%3E%3Crect x='14' y='48' width='24' height='6' rx='3' fill='%23ffffff' opacity='.8'/%3E%3C/svg%3E" />
     <link rel="stylesheet" href="/src/styles.css" />
   </head>
   <body>
-    <main class="app">
-      <header class="head">
-        <h1>Hybrid Scribe</h1>
-        <p class="sub">
-          Summaries run on your device with Gemini Nano when Chrome can host it, and fall
-          back to Gemini in the cloud through Firebase AI Logic when it cannot.
-        </p>
-      </header>
+    <header class="topbar">
+      <a class="brand" href="#scribe" aria-label="Hybrid Scribe home">
+        <span class="brand-mark" aria-hidden="true"></span>
+        <span class="brand-text">
+          <strong>Hybrid Scribe</strong>
+          <small>on-device first · cloud when needed</small>
+        </span>
+      </a>
+      <nav class="tabs" aria-label="Sections">
+        <button class="tab is-active" data-view="scribe" type="button">Scribe</button>
+        <button class="tab" data-view="how" type="button">How it works</button>
+      </nav>
+      <div class="auth-chip" id="auth-chip" title="Firebase Auth session">
+        <span class="dot" aria-hidden="true"></span>
+        <span id="auth-label">signing in…</span>
+      </div>
+    </header>
 
-      <section class="panel status" id="status-panel">
-        <div class="row">
-          <span class="label">Device model</span>
-          <span class="value" id="device-status">checking…</span>
+    <main class="layout">
+      <!-- ───────────────────────── Scribe view ───────────────────────── -->
+      <section class="view" id="view-scribe">
+        <div class="column main-column">
+          <article class="card composer">
+            <div class="card-head">
+              <h2>Document</h2>
+              <div class="badges">
+                <span class="hint" id="doc-stats">0 characters</span>
+                <button id="load-example" class="ghost small" type="button">Load example</button>
+              </div>
+            </div>
+
+            <label class="field">
+              <span class="field-label">Title</span>
+              <input id="doc-title" type="text" maxlength="120" placeholder="e.g. Field notes — Kilkenny bat survey" />
+            </label>
+
+            <div class="dropzone" id="dropzone" tabindex="0" role="button"
+                 aria-label="Drop a text file here or click to choose one">
+              <textarea id="doc-text" rows="9" spellcheck="false"
+                placeholder="Paste a document here, or drop a .txt / .md / .csv file…"></textarea>
+            </div>
+            <div class="dropzone-hint" id="drop-hint">Drop a .txt, .md, .csv or .json file — or paste above</div>
+            <input id="file-input" type="file" accept=".txt,.md,.markdown,.csv,.json,text/plain" hidden />
+
+            <div class="row wrap controls">
+              <label class="field compact">
+                <span class="field-label">Inference mode</span>
+                <select id="mode">
+                  <option value="PREFER_ON_DEVICE">Prefer on-device → cloud</option>
+                  <option value="ONLY_ON_DEVICE">On-device only</option>
+                  <option value="PREFER_IN_CLOUD">Prefer cloud → on-device</option>
+                  <option value="ONLY_IN_CLOUD">Cloud only</option>
+                </select>
+              </label>
+              <button id="run" class="primary" type="button">Summarise</button>
+            </div>
+
+            <p class="policy-line" id="policy-line">Hybrid policy loading…</p>
+            <div class="progress" id="progress" hidden><span></span></div>
+            <p class="status-line" id="compose-status" role="status"></p>
+          </article>
+
+          <article class="card result" id="result-card" hidden>
+            <div class="card-head">
+              <h2>Summary</h2>
+              <div class="badges">
+                <span class="badge" id="summary-badge">—</span>
+                <span class="latency" id="summary-latency"></span>
+                <button id="save" class="ghost small" type="button" disabled>Save to Firestore</button>
+              </div>
+            </div>
+            <div class="path-detail" id="summary-path"></div>
+            <div class="summary-body" id="summary-body"></div>
+
+            <div class="ask">
+              <h3>Ask about this document</h3>
+              <div class="row">
+                <input id="question" type="text" placeholder="What did they conclude about the roost?" />
+                <button id="ask" class="secondary" type="button">Ask</button>
+              </div>
+              <div class="answer" id="answer" hidden>
+                <div class="badges">
+                  <span class="badge" id="answer-badge">—</span>
+                  <span class="latency" id="answer-latency"></span>
+                </div>
+                <p id="answer-text"></p>
+              </div>
+              <div class="answer" id="answer-empty" hidden>
+                <p class="muted">No saved answer yet. Questions use the same hybrid policy as summaries.</p>
+              </div>
+            </div>
+          </article>
+
+          <article class="card explainer">
+            <h2>How the hybrid policy works</h2>
+            <ol class="steps">
+              <li>
+                <strong>Try the device first.</strong> Firefox AI Logic asks Chrome for a Gemini Nano
+                session (<code>PREFER_ON_DEVICE</code>). If the model is present, the text never leaves
+                the machine and costs nothing.
+              </li>
+              <li>
+                <strong>Fall back, don't fail.</strong> No model, no download, or a document larger than
+                the 9,216-token on-device window → the same call is served by Gemini in the cloud.
+              </li>
+              <li>
+                <strong>Say which one happened.</strong> Every response carries
+                <code>inferenceSource</code>; the badge above is read straight from it, never guessed.
+              </li>
+            </ol>
+            <p class="muted">
+              Chunk size and the default policy come from Firebase Remote Config, so the trade-off can be
+              tuned without shipping a new build.
+            </p>
+          </article>
         </div>
-        <div class="row">
-          <span class="label">App Check</span>
-          <span class="value" id="appcheck-status">initialising…</span>
-        </div>
-        <div class="row">
-          <span class="label">Last inference</span>
-          <span class="value" id="inference-source">none yet</span>
-        </div>
+
+        <aside class="column side-column">
+          <section class="card" id="device-card">
+            <h2>This device</h2>
+            <dl class="kv">
+              <dt>On-device model</dt><dd id="device-state">checking…</dd>
+              <dt>Chrome Prompt API</dt><dd id="prompt-api">checking…</dd>
+              <dt>App Check</dt><dd id="appcheck-state">…</dd>
+              <dt>Signed in</dt><dd id="auth-state">…</dd>
+            </dl>
+            <button class="ghost small" id="download-model" type="button" hidden>Download on-device model</button>
+            <p class="fineprint" id="device-note"></p>
+          </section>
+
+          <section class="card" id="config-card">
+            <h2>Remote Config</h2>
+            <dl class="kv">
+              <dt>chunk_size</dt><dd id="rc-chunk">…</dd>
+              <dt>max_chunks</dt><dd id="rc-max">…</dd>
+              <dt>hybrid_policy</dt><dd id="rc-policy">…</dd>
+              <dt>qa_context_chars</dt><dd id="rc-qa">…</dd>
+            </dl>
+            <p class="fineprint" id="rc-meta">fetching…</p>
+          </section>
+
+          <section class="card" id="notes-card">
+            <div class="card-head">
+              <h2>Saved documents</h2>
+              <span class="hint" id="notes-count">0</span>
+            </div>
+            <ul class="notes" id="notes-list"></ul>
+            <p class="fineprint" id="notes-empty">Summaries you keep are stored in Firestore under your user id.</p>
+          </section>
+
+          <section class="card debug" id="debug-card" hidden>
+            <h2>Debug</h2>
+            <label class="checkline">
+              <input id="force-device" type="checkbox" />
+              <span>Force <code>PREFER_ON_DEVICE</code> for the next request</span>
+            </label>
+            <p class="fineprint">
+              Used for the demo on machines without Gemini Nano: the request explicitly asks for the
+              device path, and the UI shows the fallback to cloud.
+            </p>
+            <pre class="log" id="debug-log"></pre>
+          </section>
+        </aside>
       </section>
 
-      <section class="panel">
-        <label class="label" for="prompt">Notes to summarise</label>
-        <textarea id="prompt" rows="8" spellcheck="false">Meeting notes, 14 Nov:
-- Shipped the hybrid inference spike; cloud fallback works on Safari.
-- Gemini Nano path blocked on the QA laptop because the model was not downloaded.
-- Need App Check enforcement verified before the demo, and a debug token for local dev.
-- Next: measure latency on-device vs cloud and record a 3 minute demo video.</textarea>
+      <!-- ───────────────────────── How it works ───────────────────────── -->
+      <section class="view" id="view-how" hidden>
+        <article class="prose card">
+          <h2 class="page-title">How Hybrid Scribe works</h2>
+          <p class="lead">
+            A research assistant for students and field researchers who work with long documents in
+            places with bad Wi-Fi. It runs on the device when it can, and quietly borrows the cloud
+            when it can't — and always tells you which one answered.
+          </p>
 
-        <div class="controls">
-          <label class="label" for="mode">Inference mode</label>
-          <select id="mode">
-            <option value="PREFER_ON_DEVICE" selected>Prefer on-device, fall back to cloud</option>
-            <option value="ONLY_ON_DEVICE">On-device only</option>
-            <option value="PREFER_IN_CLOUD">Prefer cloud, fall back to on-device</option>
-            <option value="ONLY_IN_CLOUD">Cloud only</option>
-          </select>
-          <button id="run" type="button">Summarise</button>
-        </div>
+          <h3>The problem</h3>
+          <p>
+            Field notes, transcripts and PDFs are long, personal and often handled offline. Cloud-only
+            assistants upload everything and stop working in a basement or a nature reserve. On-device
+            assistants are private and free, but the model is only on some machines and has a small
+            context window. Neither alone is a reliable tool.
+          </p>
+
+          <h3>The hybrid loop</h3>
+          <pre class="diagram">document ──▶ chunk (Remote Config size) ──▶ ┌───────────────┐
+                                          │ AI Logic      │
+                                          │ PREFER_ON_     │──▶ Gemini Nano (device)
+                                          │ DEVICE         │        │ no model /
+                                          └───────────────┘        │ too long
+                                                    ▲                ▼
+                                                    └──── Gemini (cloud fallback)
+                                          response.inferenceSource → badge + latency</pre>
+
+          <h3>What each Firebase product does</h3>
+          <ul class="bullets">
+            <li><strong>AI Logic (hybrid inference)</strong> — one <code>GenerativeModel</code> per mode,
+              <code>generateContent()</code> for each chunk, a reduce pass over the chunk summaries, and a
+              question pass grounded in the most relevant chunks.</li>
+            <li><strong>App Check</strong> — attestation in front of the Gemini API. The live demo uses a
+              registered debug token (allowed by the hackathon rules); a production build would swap in
+              Fraud Defense / reCAPTCHA.</li>
+            <li><strong>Authentication</strong> — anonymous sessions, so a visitor gets a private
+              Firestore namespace without creating an account.</li>
+            <li><strong>Cloud Firestore</strong> — saved documents and answers, scoped to
+              <code>users/{uid}/notes</code> by security rules.</li>
+            <li><strong>Remote Config</strong> — <code>chunk_size</code>, <code>max_chunks</code>,
+              <code>hybrid_policy</code> and <code>qa_context_chars</code>, fetched at start-up, so the
+              cost/latency trade-off is tunable without a deploy.</li>
+            <li><strong>Hosting</strong> — the static Vite build.</li>
+          </ul>
+
+          <h3>Where the device model exists</h3>
+          <p>
+            Gemini Nano ships with <strong>Chrome on Windows, macOS and ChromeOS</strong> (desktop,
+            version 139+), behind <code>chrome://flags/#prompt-api-for-gemini-nano-multimodal-input</code>.
+            Linux builds of Chrome/Chromium do not include the model service, so demo runs there always
+            answer <em>in cloud</em> — the fallback is the feature, not a bug.
+          </p>
+
+          <h3>Limits we designed around</h3>
+          <ul class="bullets">
+            <li>On-device inference is single-turn text only: no chat history, no tools, ~9,216 tokens.</li>
+            <li>JPEG/PNG are the only on-device image inputs; this app stays text-first.</li>
+            <li><code>countTokens()</code> is unreliable across paths, so chunking is character-based.</li>
+            <li>Console AI monitoring only sees cloud inference; the UI is the source of truth for path.</li>
+          </ul>
+
+          <h3>Privacy model</h3>
+          <p>
+            Documents are stored in Firestore only when you press <em>Save</em>, under your anonymous uid,
+            and are deletable from the list. When a request is served on-device, the document text is not
+            sent to Google; when it is served in the cloud, it is sent to the Gemini API under the
+            project's quota.
+          </p>
+
+          <p class="fineprint">
+            Built for <a href="https://firebasehybridaihackathon.devpost.com/" target="_blank" rel="noreferrer">#BuildHybridAI 2026</a>.
+            Source: <a href="https://github.com/matrixneoaiagent/hybrid-scribe" target="_blank" rel="noreferrer">github.com/matrixneoaiagent/hybrid-scribe</a>.
+          </p>
+        </article>
       </section>
-
-      <section class="panel result" id="result-panel" hidden>
-        <div class="result-head">
-          <span class="badge" id="badge">—</span>
-          <span class="meta" id="meta"></span>
-        </div>
-        <pre id="output"></pre>
-      </section>
-
-      <section class="panel error" id="error-panel" hidden>
-        <strong>Request failed</strong>
-        <pre id="error-output"></pre>
-      </section>
-
-      <footer class="foot">
-        <span>Firebase AI Logic hybrid inference · <span id="sdk-version">—</span></span>
-      </footer>
     </main>
+
+    <footer class="footer">
+      <span>Hybrid Scribe · Firebase AI Logic hybrid inference</span>
+      <span id="footer-build">v0.2.0</span>
+    </footer>
+
     <script type="module" src="/src/main.js"></script>
   </body>
 </html>

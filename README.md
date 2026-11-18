@@ -1,122 +1,215 @@
 # Hybrid Scribe
 
-A small, honest demo of **hybrid inference with Firebase AI Logic**: summarise notes
-with Gemini Nano on the device when Chrome can host it, and fall back to Gemini in
-the cloud when it cannot — one SDK, one model instance, one call site.
+**An offline-first research assistant for students and field researchers.** Paste or drop a long
+document; Hybrid Scribe summarises it and answers questions about it. It prefers the on-device
+Gemini Nano model through **Firebase AI Logic hybrid inference**, and transparently falls back to
+Gemini in the cloud when the device has no model — always showing which path answered and how long
+it took.
 
-Built for the [**#BuildHybridAI 2026**](https://firebasehybridaihackathon.devpost.com/) hackathon (Google / Firebase).
+Live demo · <https://buildhybridai-2026-neo.web.app>
+Built for **#BuildHybridAI 2026** (Google / Firebase) · Apache-2.0
 
-![status](https://img.shields.io/badge/status-working%20skeleton-f2a33c)
+---
 
-**Live demo:** https://buildhybridai-2026-neo.web.app
+## Why this exists
+
+Field notes, transcripts and reports are long, personal, and often written where the Wi-Fi is bad.
+A cloud-only assistant stops working in a basement or a nature reserve and uploads everything it
+touches. A device-only assistant is private and free, but Gemini Nano only ships on some desktops
+and has a ~9,216-token window.
+
+Hybrid Scribe treats both as one model with two execution paths:
+
+| | On-device (Gemini Nano) | Cloud (Gemini via AI Logic) |
+|---|---|---|
+| Cost | free, unlimited | counts against the AI Logic quota |
+| Privacy | the document never leaves the machine | the document is sent to Gemini |
+| Availability | Chrome 139+ desktop, model downloaded | any supported browser with network |
+| Context | ~9,216 tokens per request | far larger, chunked anyway |
+
+The app stays useful on a machine without the model (cloud), and stays private and free on a machine
+that has it (device) — without two code paths in the UI.
+
+---
 
 ## What it does
 
-- Paste notes, choose an inference mode, press **Summarise**.
-- The app calls `model.generateContent()` once. Firebase AI Logic decides whether the
-  request runs on the device's Prompt API (Gemini Nano) or against a cloud-hosted
-  Gemini model.
-- The UI reports exactly which path answered, using `response.inferenceSource`
-  (`ON_DEVICE` / `IN_CLOUD`), plus the round-trip time.
-- A capability panel shows `LanguageModel.availability()` so you can see whether the
-  current browser can host the on-device model.
+- **Drop or paste a document** (`.txt`, `.md`, `.csv`, `.json`, up to 200k characters).
+- **Summarise** — chunked map/reduce. Chunk size and the chunk cap come from **Remote Config**.
+- **Ask questions** — grounded in the most relevant chunks, with an explicit "the document does not
+  say" instruction instead of invented answers.
+- **See the path** — a badge per response (`on-device` / `in cloud` / `mixed paths`) read from
+  `response.inferenceSource`, plus total and per-call latency.
+- **Keep notes** — saved to **Cloud Firestore** under the visitor's anonymous user id, listed in the
+  sidebar, restorable with one click, deletable.
+- **Works offline** — Firestore's IndexedDB cache keeps saved notes readable without a network.
+- **Explains itself** — a built-in *How it works* page with the hybrid diagram and the limits.
 
-## Why hybrid
+Screenshots live in [`docs/screenshots/`](docs/screenshots).
 
-| | On-device (Gemini Nano) | Cloud (Gemini via Firebase AI Logic) |
-|---|---|---|
-| Cost | free to run | counts against AI Logic quota |
-| Privacy | text never leaves the machine | text is sent to Gemini |
-| Availability | Chrome 139+ desktop, model downloaded | any supported browser with network |
-| Latency | fast once the model is warm | network round-trip |
-
-The point of the demo is that neither column wins alone: the app stays useful on a
-locked-down laptop (cloud) and stays private and free on a capable one (on-device).
+---
 
 ## Architecture
 
 ```
-index.html          UI shell
-src/main.js         AI Logic service, hybrid model, inference + UI state
-src/appcheck.js     App Check (debug provider locally, reCAPTCHA in production)
-src/firebase-config.js  public Firebase web config
-vite.config.js      dev server / build
-firebase.json       Hosting config
+index.html                  shell, Scribe + How it works views
+src/firebase.js             app, App Check, anonymous Auth, Firestore (IndexedDB cache), Remote Config
+src/ai.js                   hybrid model, chunking, map/reduce summary, grounded Q&A
+src/notes.js                Firestore CRUD for users/{uid}/notes
+src/main.js                 UI state, badges, latency, debug panel
+src/firebase-config.js      public web config (identifiers, not secrets)
+firestore.rules             owner-only access, bounded fields and sizes
+firebase.json               Hosting (dist/) + Firestore rules
 ```
 
-Only three lines matter for the hackathon requirement:
+### The hybrid call
 
 ```js
 const ai = getAI(app, { backend: new GoogleAIBackend() });
-const model = getGenerativeModel(ai, { mode: InferenceMode.PREFER_ON_DEVICE });
-const result = await model.generateContent(prompt); // response.inferenceSource tells you where it ran
+
+const model = getGenerativeModel(ai, {
+  mode: InferenceMode.PREFER_ON_DEVICE,          // device first, cloud fallback
+  inCloudParams: { model: 'gemini-3.5-flash-lite' },
+  onDeviceParams: {
+    createOptions: {
+      expectedInputs: [{ type: 'text', languages: ['en'] }],
+      expectedOutputs: [{ type: 'text', languages: ['en'] }],
+    },
+  },
+});
+
+await model.initializeDeviceModel(progress => …); // after a user gesture
+const result = await model.generateContent(prompt);
+result.response.inferenceSource;                  // 'on_device' | 'in_cloud'
 ```
 
-`initializeDeviceModel()` is called inside the button handler, because Chrome only
-allows Prompt API sessions after a user gesture.
+- `initializeDeviceModel()` is called inside the click handler: Chrome only allows a Prompt API
+  session after a user gesture. It is fire-and-forget in `PREFER_*` modes so the first request can
+  fall back to the cloud while the model downloads.
+- In `ONLY_ON_DEVICE` mode the request fails loudly instead of falling back, which is how the
+  no-model case is surfaced for testing.
+- The SDK's `inferenceSource` is normalised to `ON_DEVICE` / `IN_CLOUD`; a multi-call document that
+  mixes paths reports `MIXED`, and the detail line shows the per-call split.
+
+### Chunking and reduce
+
+`chunk_size` (default 1800 chars) and `max_chunks` (default 6) come from Remote Config. Paragraphs
+are packed greedily; oversized paragraphs are split on sentence boundaries. Each chunk is summarised
+(the *map* step), then a single *reduce* prompt merges the partial summaries, keeping names, numbers
+and dates. Documents longer than `chunk_size × max_chunks` are truncated with a visible notice.
+
+### Grounded Q&A
+
+The question is tokenised, stop-worded and scored against the chunks (term frequency, no embeddings,
+no extra cost). The best chunks are packed up to `qa_context_chars` and sent with an instruction to
+answer only from those excerpts — or to say that the document does not say.
+
+---
+
+## Firebase services, and where they are called
+
+| Service | Used for | Code |
+|---|---|---|
+| **AI Logic (hybrid inference)** | every summary, reduce and question call | `src/ai.js` |
+| **App Check** | attests requests to the Gemini API; debug token for local/dev, Fraudd Defence/reCAPTCHA for a public build | `src/firebase.js` |
+| **Authentication** | anonymous session → private Firestore namespace, no sign-up | `src/firebase.js` |
+| **Cloud Firestore** | `users/{uid}/notes` documents + IndexedDB offline cache | `src/notes.js` |
+| **Remote Config** | `chunk_size`, `max_chunks`, `hybrid_policy`, `qa_context_chars`, `summary_style` | `src/firebase.js` |
+| **Hosting** | the static Vite build | `firebase.json` |
+
+Security rules (`firestore.rules`) restrict each user to their own subtree and bound the document
+shape, so a forged client cannot write outside `users/{uid}` or paste unbounded blobs.
+
+---
 
 ## Setup
 
-Requirements: Node 20+, a Firebase project on the **Spark (free)** plan with AI Logic
-enabled, and Chrome 139+ on desktop if you want the on-device path.
+Requirements: Node 20+, a Firebase project on the **Spark (free)** plan with AI Logic enabled, and
+Chrome 139+ on Windows/macOS/ChromeOS if you want the on-device path.
 
 ```bash
 npm install
-cp .env.local.example .env.local   # then fill in your App Check debug token
-npm run dev                        # http://localhost:5173
+cp .env.local.example .env.local     # add your App Check debug token
+npm run dev                          # http://localhost:5173
 ```
 
-### Firebase configuration
+### 1. Firebase project
 
-1. Create a Firebase project and a **Web app**, then copy its config into
-   `src/firebase-config.js` (these values are public identifiers, not secrets).
-2. Open **AI Logic → Get started → Gemini Developer API** and finish the wizard. It
-   enables the required APIs and enforces App Check for AI Logic.
-3. **App Check → Apps → Register** your web app, then add a **debug token** for local
-   development (`firebase appcheck:debugtokens:create --app <appId>`), and put it in
-   `.env.local` as `VITE_FIREBASE_APPCHECK_DEBUG_TOKEN`.
-4. For a public deployment, register a production attestation provider and set
-   `VITE_RECAPTCHA_SITE_KEY` instead of the debug token.
+1. Create a project and a **Web app**; copy the config into `src/firebase-config.js`.
+2. **AI Logic → Get started → Gemini Developer API** — enables the APIs and enforces App Check.
+3. **Authentication → Sign-in method → Anonymous → Enable.**
+4. **Firestore → Create database** (production mode is fine, rules are deployed next).
+5. **App Check → Apps → Register** the web app, then create a debug token:
+   ```bash
+   firebase appcheck:debugtokens:create --app <appId> --display-name hybridai-local
+   ```
+   Put it in `.env.local` as `VITE_FIREBASE_APPCHECK_DEBUG_TOKEN`.
+6. Remote Config parameters (console, or `PUT` the template):
 
-Debug tokens are credentials. `.env.local` is gitignored; never commit it.
+   | Key | Type | Default | Meaning |
+   |---|---|---|---|
+   | `chunk_size` | number | `1800` | characters per summarisation chunk |
+   | `max_chunks` | number | `6` | chunks summarised per document |
+   | `hybrid_policy` | string | `prefer_on_device` | default inference mode |
+   | `qa_context_chars` | number | `4000` | context budget for a question |
+   | `summary_style` | string | `bullets` | `bullets` or `prose` |
 
-### On-device model
-
-Chrome desktop 139+ only. Enable `chrome://flags/#prompt-api-for-gemini-nano-multimodal-input`,
-restart, then check availability in DevTools:
-
-```js
-await LanguageModel.availability(); // "available" | "downloadable" | "downloading" | "unavailable"
-```
-
-The first on-device request starts a multi-hundred-MB model download; the UI shows
-download progress while `PREFER_ON_DEVICE` silently falls back to the cloud.
-
-## Deploy
+### 2. Deploy
 
 ```bash
 npm run build
-firebase deploy --only hosting
+firebase deploy --only hosting,firestore:rules
 ```
 
-`firebase.json` publishes `dist/` and rewrites everything to `index.html`.
+`.firebaserc` points at the demo project; change it for your own.
 
-## Known limitations
+---
 
-- **On-device inference is Chrome-desktop only.** This project was developed on Linux,
-  where Chrome's on-device model service is not shipped, so every local run answered
-  `IN_CLOUD`. The on-device branch is exercised automatically on a capable machine —
-  no code change required.
-- On-device requests are single-turn text generation (no chat, no tools), max ~9216
-  tokens. Long notes fall back to the cloud.
-- `countTokens()` and server prompt templates are not supported by hybrid inference.
-- AI monitoring in the Firebase console only shows cloud inference.
+## Testing the on-device branch
 
-## Roadmap
+Nobody should have to take "it works on-device" on faith. Two things make it checkable:
 
-- Register a Fraud Defense (reCAPTCHA Enterprise) provider for the hosted build.
-- Add streaming output and a latency comparison view (on-device vs cloud, same prompt).
-- Ship the same UI to Android (Gemini Nano via AI Logic) for the cross-platform bonus.
+1. **The device panel** shows `LanguageModel.availability()` (and a download button when the model
+   is `downloadable`).
+2. **The debug flag**: open `?debug=1` (or `?force-device=1`) to reveal a panel with *Force
+   `PREFER_ON_DEVICE`*. Every request then explicitly asks for the device path, the debug log prints
+   the requested vs. answered path per call, and the badge shows the fallback when a device has no
+   model:
+   ```
+   21:47:16  summary: requested PREFER_ON_DEVICE → IN_CLOUD · IN_CLOUD/1280ms
+   21:47:51  ask:     requested PREFER_ON_DEVICE → IN_CLOUD in 1467 ms
+   ```
+   This is exactly how the demo video was recorded on Linux.
+
+**Where Gemini Nano exists:** Chrome desktop on Windows, macOS and ChromeOS, version 139+, with
+`chrome://flags/#prompt-api-for-gemini-nano-multimodal-input` enabled. Linux Chrome/Chromium builds do
+not include the model service, so `LanguageModel.availability()` returns `unavailable` there and every
+request correctly falls back to the cloud.
+
+---
+
+## Limits and design decisions
+
+- On-device inference is **single-turn text only** — no chat history, no tools, no function calling.
+- On-device context is **~9,216 tokens**; chunking keeps each request inside it, and the chunk cap
+  keeps cost predictable.
+- `countTokens()` is not supported by hybrid inference (counts differ per path), so chunking is
+  character-based.
+- Console AI monitoring only records cloud inference; the UI is the source of truth for the path.
+- The public demo uses an App Check **debug token** (explicitly allowed by the hackathon rules). A
+  production build should register Fraud Defence / reCAPTCHA and set `VITE_RECAPTCHA_SITE_KEY`.
+- Anonymous accounts expire with the browser profile; notes are per-session by design. Linking a
+  Google account would be the next step for durable libraries.
+
+---
+
+## Privacy
+
+Documents are only persisted when you press **Save to Firestore**, under your anonymous uid, and are
+deletable from the sidebar. When a request is served on-device, the text is not sent to Google; when
+it is served in the cloud, it goes to the Gemini API under the project's quota.
+
+---
 
 ## License
 
