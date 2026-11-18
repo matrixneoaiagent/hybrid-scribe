@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Hybrid Scribe — on-device first, cloud when needed</title>
+    <link rel="stylesheet" href="/src/styles.css" />
+  </head>
+  <body>
+    <main class="app">
+      <header class="head">
+        <h1>Hybrid Scribe</h1>
+        <p class="sub">
+          Summaries run on your device with Gemini Nano when Chrome can host it, and fall
+          back to Gemini in the cloud through Firebase AI Logic when it cannot.
+        </p>
+      </header>
+
+      <section class="panel status" id="status-panel">
+        <div class="row">
+          <span class="label">Device model</span>
+          <span class="value" id="device-status">checking…</span>
+        </div>
+        <div class="row">
+          <span class="label">App Check</span>
+          <span class="value" id="appcheck-status">initialising…</span>
+        </div>
+        <div class="row">
+          <span class="label">Last inference</span>
+          <span class="value" id="inference-source">none yet</span>
+        </div>
+      </section>
+
+      <section class="panel">
+        <label class="label" for="prompt">Notes to summarise</label>
+        <textarea id="prompt" rows="8" spellcheck="false">Meeting notes, 14 Nov:
+- Shipped the hybrid inference spike; cloud fallback works on Safari.
+- Gemini Nano path blocked on the QA laptop because the model was not downloaded.
+- Need App Check enforcement verified before the demo, and a debug token for local dev.
+- Next: measure latency on-device vs cloud and record a 3 minute demo video.</textarea>
+
+        <div class="controls">
+          <label class="label" for="mode">Inference mode</label>
+          <select id="mode">
+            <option value="PREFER_ON_DEVICE" selected>Prefer on-device, fall back to cloud</option>
+            <option value="ONLY_ON_DEVICE">On-device only</option>
+            <option value="PREFER_IN_CLOUD">Prefer cloud, fall back to on-device</option>
+            <option value="ONLY_IN_CLOUD">Cloud only</option>
+          </select>
+          <button id="run" type="button">Summarise</button>
+        </div>
+      </section>
+
+      <section class="panel result" id="result-panel" hidden>
+        <div class="result-head">
+          <span class="badge" id="badge">—</span>
+          <span class="meta" id="meta"></span>
+        </div>
+        <pre id="output"></pre>
+      </section>
+
+      <section class="panel error" id="error-panel" hidden>
+        <strong>Request failed</strong>
+        <pre id="error-output"></pre>
+      </section>
+
+      <footer class="foot">
+        <span>Firebase AI Logic hybrid inference · <span id="sdk-version">—</span></span>
+      </footer>
+    </main>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

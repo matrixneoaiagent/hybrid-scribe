@@ -1,0 +1,20 @@
+{
+  "name": "hybrid-scribe",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "On-device-first summariser built with Firebase AI Logic hybrid inference",
+  "license": "Apache-2.0",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "deploy": "vite build && firebase deploy --only hosting"
+  },
+  "dependencies": {
+    "firebase": "^13.4.0"
+  },
+  "devDependencies": {
+    "vite": "^7.1.0"
+  }
+}
